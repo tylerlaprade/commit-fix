@@ -1,0 +1,16 @@
+[package]
+name = "lint-staged-rs"
+version = "0.1.0"
+edition = "2021"
+description = "Auto-format and lint-fix staged Rust files on commit. The Rust equivalent of lint-staged."
+license = "MIT"
+repository = "https://github.com/tylerlaprade/lint-staged-rs"
+keywords = ["git", "hooks", "lint", "format", "pre-commit"]
+categories = ["development-tools"]
+readme = "README.md"
+
+[[bin]]
+name = "lint-staged-rs"
+path = "src/main.rs"
+
+[dependencies]
