@@ -1,52 +1,46 @@
 use std::process::Command;
 
-/// Run the lint-staged workflow: stash, format, fix, re-stage, unstash.
-/// Returns Ok(()) on success, Err with a message on failure.
+/// Run the lint-staged workflow: format and fix the whole project,
+/// then re-stage any .rs files that were already staged.
 pub fn run() -> Result<(), String> {
-    // Stash unstaged changes
-    let stashed = Command::new("git")
-        .args(["stash", "push", "--keep-index", "--quiet", "-m", "lint-staged-rs"])
-        .status()
-        .map_err(|e| format!("git stash failed: {}", e))?
-        .success();
+    let staged_files = get_staged_rs_files()?;
 
-    // Format
-    let _ = Command::new("cargo")
-        .args(["fmt"])
-        .status();
+    // Format everything
+    let _ = Command::new("cargo").args(["fmt"]).status();
 
-    // Auto-fix lints (clippy includes compiler lints)
+    // Auto-fix clippy + compiler lints
     let _ = Command::new("cargo")
         .args(["clippy", "--fix", "--allow-dirty", "--allow-staged"])
         .status();
 
-    // Re-stage fixed .rs files that were already staged
-    let staged = Command::new("git")
+    // Re-stage only files that were already staged
+    re_stage(&staged_files);
+
+    Ok(())
+}
+
+fn get_staged_rs_files() -> Result<Vec<String>, String> {
+    let output = Command::new("git")
         .args(["diff", "--name-only", "--cached", "--diff-filter=d"])
         .output()
-        .map_err(|e| format!("git diff failed: {}", e))?;
+        .map_err(|e| format!("git diff failed: {e}"))?;
 
-    let rs_files: Vec<&str> = std::str::from_utf8(&staged.stdout)
+    Ok(std::str::from_utf8(&output.stdout)
         .unwrap_or("")
         .lines()
         .filter(|f| f.ends_with(".rs"))
-        .collect();
+        .map(String::from)
+        .collect())
+}
 
-    if !rs_files.is_empty() {
-        let mut cmd = Command::new("git");
-        cmd.arg("add");
-        for f in &rs_files {
-            cmd.arg(f);
-        }
-        let _ = cmd.status();
+fn re_stage(files: &[String]) {
+    if files.is_empty() {
+        return;
     }
-
-    // Restore unstaged changes
-    if stashed {
-        let _ = Command::new("git")
-            .args(["stash", "pop", "--quiet"])
-            .status();
+    let mut cmd = Command::new("git");
+    cmd.arg("add");
+    for f in files {
+        cmd.arg(f);
     }
-
-    Ok(())
+    let _ = cmd.status();
 }
