@@ -1,10 +1,5 @@
 fn main() {
-    if std::env::var("NO_HUSKY_HOOKS").as_deref() == Ok("1") {
-        return;
-    }
-
-    if let Err(e) = lint_staged_rs::run() {
-        eprintln!("lint-staged-rs: {}", e);
-        std::process::exit(1);
-    }
+    // No flags, no env vars: `git commit --no-verify` is the skip.
+    // run() never blocks a commit — all failures degrade to warnings.
+    commit_fix::run();
 }

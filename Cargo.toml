@@ -1,8 +1,8 @@
 [package]
-name = "lint-staged-rs"
-version = "0.1.0"
+name = "commit-fix"
+version = "0.2.0"
 edition = "2021"
-description = "Auto-format and lint-fix staged Rust files on commit. The Rust equivalent of lint-staged."
+description = "Stashless commit-time auto-fix for Rust (fmt, opt-in clippy --fix, lockfile freshening), safe with concurrent writers in one working tree."
 license = "MIT"
 repository = "https://github.com/tylerlaprade/lint-staged-rs"
 keywords = ["git", "hooks", "lint", "format", "pre-commit"]
@@ -10,7 +10,9 @@ categories = ["development-tools"]
 readme = "README.md"
 
 [[bin]]
-name = "lint-staged-rs"
+name = "commit-fix"
 path = "src/main.rs"
 
 [dependencies]
+rustfix = "0.9.7"
+serde_json = "1.0.151"
