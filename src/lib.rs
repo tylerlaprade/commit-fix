@@ -17,17 +17,22 @@
 //!   fix is rustfmt of the file's own indexed blob, a pure function of the
 //!   commit's content, so worktree contention is irrelevant to it. A
 //!   contended worktree copy is simply left alone (states converge when
-//!   its session commits). `cargo fmt` also runs repo-wide on the tree,
-//!   and clean unstaged files whose only change is that formatting ride
-//!   along — gated on being byte-identical to rustfmt of their blob.
-//! - Clippy fixes run whenever the commit stages Rust code or a manifest:
-//!   `cargo clippy --message-format=json` in the real tree (no scratch
-//!   build, reuses the warm target dir; cargo may refresh a stale
-//!   Cargo.lock as part of resolution — the lock pass tolerates that),
-//!   machine-applicable suggestions applied via rustfix to the indexed
-//!   blob. Clippy is the one best-effort fixer: its byte offsets are only
-//!   valid against the exact bytes it compiled, so a file whose working
-//!   copy differs from its blob is skipped with a warning.
+//!   its session commits). The tree is also formatted repo-wide — one
+//!   rustfmt per tracked file, so a single unparseable mid-edit file never
+//!   blocks the rest — and clean unstaged files whose only change is that
+//!   formatting ride along, gated on being byte-identical to rustfmt of
+//!   their blob.
+//! - Clippy runs whenever the commit stages Rust code or a manifest:
+//!   `cargo clippy --message-format=json -- --force-warn clippy::pedantic`
+//!   in the real tree (reuses the warm target dir; cargo may refresh a
+//!   stale Cargo.lock as part of resolution — the lock pass tolerates
+//!   that). Machine-applicable suggestions are applied via rustfix to the
+//!   indexed blobs of the commit's own staged files; lints with no
+//!   automatic fix are summarized in one warning. Per-repo clippy.toml and
+//!   crate attributes are honored natively. If the tree doesn't compile —
+//!   someone's mid-edit code, anywhere in the dep graph — the pass skips
+//!   SILENTLY: that is the editing session's concern, not every
+//!   committer's.
 //! - A commit that changes Cargo.toml gets Cargo.lock freshened and
 //!   staged. Non-workspace repos are resolved in a scratch export with
 //!   `path = "../x"` dependencies as flat siblings — a repo checked out
@@ -301,21 +306,30 @@ fn cargo_in(dir: &Path, args: &[&str]) -> bool {
     status_ok("cargo", args, Some(dir))
 }
 
-/// Run clippy in diagnostic mode (writes nothing, reuses the warm target
-/// dir) and stage its machine-applicable fixes, each applied via rustfix to
-/// the indexed blob and gated on an untouched working copy.
-fn clippy_fix(pre_wip: &HashSet<String>, edition: &str) {
+/// Run clippy in diagnostic mode (reuses the warm target dir) and stage its
+/// machine-applicable fixes for the commit's own staged files, each applied
+/// via rustfix to the indexed blob and gated on an untouched working copy.
+/// Pedantic lints ride along as advisory warnings (mirroring the editors'
+/// rust-analyzer config); carve-outs live in each repo's clippy.toml and
+/// crate attributes, which clippy honors natively.
+fn clippy_fix(staged_set: &HashSet<&str>, pre_wip: &HashSet<String>, edition: &str) {
     let Ok(out) = Command::new("cargo")
-        .args(["clippy", "--message-format=json"])
+        .args([
+            "clippy",
+            "--message-format=json",
+            "--",
+            "--force-warn",
+            "clippy::pedantic",
+        ])
         .stderr(Stdio::null())
         .output()
     else {
-        warn("cargo clippy unavailable; lint fixes skipped");
-        return;
+        return; // no cargo — the staged fmt pass already warned
     };
     let text = String::from_utf8_lossy(&out.stdout);
     let mut compile_error = !out.status.success();
     let mut by_file: HashMap<String, Vec<rustfix::Suggestion>> = HashMap::new();
+    let mut unfixable: Vec<String> = Vec::new();
     for line in text.lines() {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
@@ -327,13 +341,27 @@ fn clippy_fix(pre_wip: &HashSet<String>, edition: &str) {
         if msg["level"] == "error" {
             compile_error = true;
         }
-        let Ok(sugs) = rustfix::get_suggestions_from_json(
+        let sugs = rustfix::get_suggestions_from_json(
             &msg.to_string(),
             &HashSet::new(),
             rustfix::Filter::MachineApplicableOnly,
-        ) else {
+        )
+        .unwrap_or_default();
+        if sugs.is_empty() {
+            // A real lint with no machine-applicable fix: remember it for
+            // the report (CI's -Dwarnings will fail on it).
+            if msg["level"] == "warning"
+                && msg["code"]["code"]
+                    .as_str()
+                    .is_some_and(|c| c.starts_with("clippy::"))
+            {
+                let code = msg["code"]["code"].as_str().unwrap_or("clippy");
+                let at = msg["spans"][0]["file_name"].as_str().unwrap_or("?");
+                let ln = msg["spans"][0]["line_start"].as_u64().unwrap_or(0);
+                unfixable.push(format!("{code} at {at}:{ln}"));
+            }
             continue;
-        };
+        }
         for s in sugs {
             let files: HashSet<String> = s
                 .solutions
@@ -352,11 +380,26 @@ fn clippy_fix(pre_wip: &HashSet<String>, edition: &str) {
         }
     }
     if compile_error {
-        warn("clippy hit compile errors; lint fixes skipped (CI will tell)");
+        // Someone's mid-edit code doesn't compile. That is their session's
+        // concern, not this committer's — skip lint fixes silently.
         return;
+    }
+    if !unfixable.is_empty() {
+        unfixable.sort();
+        unfixable.dedup();
+        let shown = unfixable.iter().take(10).cloned().collect::<Vec<_>>();
+        let more = unfixable.len().saturating_sub(10);
+        let suffix = if more > 0 { format!(" (+{more} more)") } else { String::new() };
+        warn(&format!("clippy: {}{suffix}", shown.join(", ")));
     }
     let mut staged = Vec::new();
     for (file, sugs) in by_file {
+        // Fixes apply only to this commit's own files: with pedantic on,
+        // most files carry fixable suggestions, and sweeping crate-wide
+        // rewrites into an unrelated commit would break commit scoping.
+        if !staged_set.contains(file.as_str()) {
+            continue;
+        }
         if pre_wip.contains(&file) {
             warn(&format!("clippy fix for {file} skipped: file has local edits"));
             continue;
@@ -490,15 +533,22 @@ pub fn run() {
         .unwrap_or_default();
     let staged_set: HashSet<&str> = staged_names.iter().map(String::as_str).collect();
 
-    // Tree-wide format. cargo fmt is all-or-nothing — one unparseable
-    // mid-edit file anywhere kills it — so on failure fall back to
-    // formatting each modified file individually; broken ones stay as they
-    // are (the staged pass warns per file for anything being committed).
-    if !status_ok("cargo", &["fmt"], None) {
-        for f in git_paths(&["diff", "--name-only", "-z", "--", "*.rs"]).unwrap_or_default() {
-            let _ = status_ok("rustfmt", &["--edition", &edition, &f], None);
+    // Tree-wide format, one rustfmt per tracked file (parallelized).
+    // Deliberately not `cargo fmt`: that is all-or-nothing, so one
+    // unparseable mid-edit file anywhere would kill formatting for the
+    // whole tree. Per file, broken ones stay as they are (the staged pass
+    // warns for anything actually being committed).
+    let all_rs = git_paths(&["ls-files", "-z", "--", "*.rs"]).unwrap_or_default();
+    std::thread::scope(|scope| {
+        for chunk in all_rs.chunks(all_rs.len().div_ceil(8).max(1)) {
+            let edition = &edition;
+            scope.spawn(move || {
+                for f in chunk {
+                    let _ = status_ok("rustfmt", &["--edition", edition, f], None);
+                }
+            });
         }
-    }
+    });
 
     // Staged .rs files are fixed unconditionally: the staged bytes are
     // rustfmt of each file's own indexed blob — a pure function of the
@@ -545,7 +595,7 @@ pub fn run() {
 
     // Clippy needs a build — only pay for it when the commit touches Rust.
     if commits_rust {
-        clippy_fix(&pre_wip, &edition);
+        clippy_fix(&staged_set, &pre_wip, &edition);
     }
     if commits_manifest {
         if pathspec_mode && !staged_set.contains("Cargo.lock") {

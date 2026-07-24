@@ -7,6 +7,8 @@ use std::process::Command;
 const BIN: &str = env!("CARGO_BIN_EXE_commit-fix");
 const UNFORMATTED: &str = "pub fn probe( x:i32 ) ->  i32 {   x+ 1 }\n";
 const FORMATTED: &str = "pub fn probe(x: i32) -> i32 {\n    x + 1\n}\n";
+// What the full pipeline produces: fmt plus clippy's must_use_candidate fix.
+const FIXED: &str = "#[must_use]\npub fn probe(x: i32) -> i32 {\n    x + 1\n}\n";
 
 fn sh(dir: &Path, cmd: &str, args: &[&str]) -> std::process::Output {
     let out = Command::new(cmd)
@@ -83,7 +85,7 @@ fn stages_pure_fmt_fix() {
     write(&dir, "src/lib.rs", UNFORMATTED);
     sh(&dir, "git", &["add", "src/lib.rs"]);
     run_hook(&dir, &[]);
-    assert_eq!(staged_blob(&dir, "src/lib.rs"), FORMATTED);
+    assert_eq!(staged_blob(&dir, "src/lib.rs"), FIXED);
 }
 
 #[test]
@@ -149,8 +151,8 @@ fn pathspec_commit_gets_fixed() {
     sh(&dir, "git", &["commit", "-qm", "pathspec", "src/lib.rs"]);
     assert_eq!(
         git(&dir, &["show", "HEAD:src/lib.rs"]),
-        FORMATTED,
-        "pathspec commit must ship the fmt fix"
+        FIXED,
+        "pathspec commit must ship the fixes"
     );
     // Git re-stages the pathspec file's PRE-hook bytes after the commit, so
     // the file is left MM (index = unfixed bytes, tree = cargo-fmt'd). The
@@ -235,6 +237,44 @@ fn clippy_fix_is_staged_when_safe() {
     let blob = staged_blob(&dir, "src/lib.rs");
     assert!(blob.contains("v.contains(&x)"), "clippy fix not staged: {blob}");
     assert_eq!(std::fs::read_to_string(dir.join("src/lib.rs")).unwrap(), blob);
+}
+
+#[test]
+fn unfixable_clippy_warning_is_reported() {
+    let dir = make_repo("lintreport");
+    // clippy::missing_panics_doc: pedantic, fires on pub items, no auto-fix.
+    let code = "pub fn head(v: &[i32]) -> i32 {\n    *v.first().unwrap()\n}\n";
+    write(&dir, "src/lib.rs", code);
+    sh(&dir, "git", &["add", "src/lib.rs"]);
+    let out = Command::new(BIN).current_dir(&dir).output().unwrap();
+    assert!(out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("missing_panics_doc"),
+        "pedantic lint must appear in the report: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn broken_tree_skips_clippy_silently() {
+    let dir = make_repo("brokentree");
+    write(&dir, "src/lib.rs", "pub mod part;\npub fn base() {}\n");
+    write(&dir, "src/part.rs", "pub fn whole() {}\n");
+    sh(&dir, "git", &["add", "-A"]);
+    sh(&dir, "git", &["commit", "-qm", "add module"]);
+    // Stage an unformatted change; another session breaks part.rs unstaged.
+    write(&dir, "src/lib.rs", &format!("pub mod part;\n{UNFORMATTED}"));
+    sh(&dir, "git", &["add", "src/lib.rs"]);
+    write(&dir, "src/part.rs", "pub fn half(");
+    let out = Command::new(BIN).current_dir(&dir).output().unwrap();
+    assert!(out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !err.to_lowercase().contains("clippy"),
+        "a tree someone else broke must not produce clippy noise: {err}"
+    );
+    // The staged fmt fix still applies.
+    assert!(staged_blob(&dir, "src/lib.rs").contains("pub fn probe(x: i32) -> i32 {"));
 }
 
 #[test]

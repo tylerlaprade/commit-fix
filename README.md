@@ -11,14 +11,20 @@ On every commit:
 
 1. Every staged `.rs` file is reformatted **into the commit in flight**,
    unconditionally — the fix is rustfmt of the file's own staged content, so
-   nothing happening in the working tree can block it. `cargo fmt` also runs
-   across the repo, and clean unstaged files whose only change is that
-   formatting ride along into the commit.
-2. If the commit stages Rust code or a manifest, runs `cargo clippy` in
-   diagnostic mode (no scratch build — it reuses your warm target dir) and
-   applies machine-applicable lint fixes via [rustfix](https://crates.io/crates/rustfix),
-   staged under the same safety rules. Commits that touch no Rust never pay
-   for a build.
+   nothing happening in the working tree can block it. The tree is also
+   formatted repo-wide, one rustfmt per tracked file (so one unparseable
+   mid-edit file never blocks the rest), and clean unstaged files whose only
+   change is that formatting ride along into the commit.
+2. If the commit stages Rust code or a manifest, runs `cargo clippy`
+   in diagnostic mode with pedantic lints as advisory warnings (no scratch
+   build — it reuses your warm target dir). Machine-applicable fixes are
+   applied via [rustfix](https://crates.io/crates/rustfix) to the commit's
+   own staged files; lints with no automatic fix are summarized in a single
+   warning line. Per-repo `clippy.toml` and crate attributes are honored
+   natively. A tree that doesn't compile — someone's mid-edit code anywhere
+   in the dep graph — skips this pass *silently*: that is the editing
+   session's concern, not every committer's. Commits that touch no Rust
+   never pay for a build.
 3. If the commit changes `Cargo.toml`, freshens `Cargo.lock` and stages it —
    including the case where the repo is checked out inside an umbrella
    workspace but CI builds it standalone (resolution runs in a momentary
