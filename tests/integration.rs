@@ -248,6 +248,10 @@ fn never_blocks_when_cargo_missing() {
         .output()
         .unwrap();
     assert!(out.status.success(), "must exit 0 without cargo");
-    assert!(String::from_utf8_lossy(&out.stderr).contains("cargo fmt failed"));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("could not format staged"),
+        "the staged file's unfixed state must be warned about"
+    );
+    assert_eq!(staged_blob(&dir, "src/lib.rs"), UNFORMATTED);
 }
 

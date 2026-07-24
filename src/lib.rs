@@ -123,11 +123,22 @@ fn stage_bytes(path: &str, bytes: &[u8]) -> bool {
     }
     let oid = String::from_utf8_lossy(&out.stdout).trim().to_string();
     let spec = format!("{},{oid},{path}", index_mode(path));
-    status_ok(
-        "git",
-        &["update-index", "--add", "--cacheinfo", &spec],
-        None,
-    )
+    // Another process's momentary `git add` holds the index lock; retry a
+    // few times before giving the fix up as a warning.
+    for attempt in 0..5 {
+        if status_ok(
+            "git",
+            &["update-index", "--add", "--cacheinfo", &spec],
+            None,
+        ) {
+            return true;
+        }
+        if attempt < 4 {
+            std::thread::sleep(std::time::Duration::from_millis(50 << attempt));
+        }
+    }
+    warn(&format!("could not stage fix for {path} (index busy)"));
+    false
 }
 
 /// Edition from a literal `edition = "NNNN"`; workspace-inherited or dotted
@@ -479,9 +490,14 @@ pub fn run() {
         .unwrap_or_default();
     let staged_set: HashSet<&str> = staged_names.iter().map(String::as_str).collect();
 
-    let fmt_ok = status_ok("cargo", &["fmt"], None);
-    if !fmt_ok {
-        warn("cargo fmt failed; tree formatting unchecked for this commit");
+    // Tree-wide format. cargo fmt is all-or-nothing — one unparseable
+    // mid-edit file anywhere kills it — so on failure fall back to
+    // formatting each modified file individually; broken ones stay as they
+    // are (the staged pass warns per file for anything being committed).
+    if !status_ok("cargo", &["fmt"], None) {
+        for f in git_paths(&["diff", "--name-only", "-z", "--", "*.rs"]).unwrap_or_default() {
+            let _ = status_ok("rustfmt", &["--edition", &edition, &f], None);
+        }
     }
 
     // Staged .rs files are fixed unconditionally: the staged bytes are
@@ -505,7 +521,7 @@ pub fn run() {
     // Ride-along cleanup of unstaged files: only provably-pure formatting
     // changes on files nobody was editing, and never in pathspec mode
     // (git would keep them only as index reversals).
-    if fmt_ok && !pathspec_mode {
+    if !pathspec_mode {
         for f in git_paths(&["diff", "--name-only", "-z", "--", "*.rs"]).unwrap_or_default() {
             if staged_set.contains(f.as_str()) || pre_wip.contains(&f) {
                 continue;
