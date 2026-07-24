@@ -348,15 +348,18 @@ fn clippy_fix(staged_set: &HashSet<&str>, pre_wip: &HashSet<String>, edition: &s
         )
         .unwrap_or_default();
         if sugs.is_empty() {
-            // A real lint with no machine-applicable fix: remember it for
-            // the report (CI's -Dwarnings will fail on it).
+            // A real lint with no machine-applicable fix, in a file this
+            // commit stages: remember it for the report. Debt in files the
+            // commit doesn't touch is not this committer's noise (a repo
+            // can carry hundreds of outstanding pedantic notes).
+            let at = msg["spans"][0]["file_name"].as_str().unwrap_or("?");
             if msg["level"] == "warning"
+                && staged_set.contains(at)
                 && msg["code"]["code"]
                     .as_str()
                     .is_some_and(|c| c.starts_with("clippy::"))
             {
                 let code = msg["code"]["code"].as_str().unwrap_or("clippy");
-                let at = msg["spans"][0]["file_name"].as_str().unwrap_or("?");
                 let ln = msg["spans"][0]["line_start"].as_u64().unwrap_or(0);
                 unfixable.push(format!("{code} at {at}:{ln}"));
             }
