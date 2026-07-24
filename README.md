@@ -65,6 +65,19 @@ The floor everywhere: a fix that cannot be applied safely becomes a named
 warning and CI's problem, never someone else's half-written code in your
 commit, and never a blocked commit.
 
+## Choosing lint rules
+
+commit-fix has no lint configuration — it fixes whatever plain `cargo
+clippy` reports. Your `[lints]` table, `clippy.toml`, and crate attributes
+are the whole story; with none of those, you get clippy's defaults (no
+pedantic). Opting a crate into pedantic with escape hatches looks like:
+
+```toml
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+cast_possible_truncation = "allow"
+```
+
 ## Setup
 
 ```sh
