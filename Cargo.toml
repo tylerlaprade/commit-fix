@@ -1,9 +1,9 @@
 [package]
 name = "commit-fix"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "Zero-config pre-commit auto-fix for Rust: rustfmt, clippy fixes, and lockfile freshening staged into the commit — safe with concurrent writers, never blocks."
-license = "MIT"
+license = "GPL-3.0-only"
 repository = "https://github.com/tylerlaprade/commit-fix"
 keywords = ["git", "hooks", "lint", "format", "pre-commit"]
 categories = ["development-tools"]
