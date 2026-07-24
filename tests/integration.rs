@@ -57,7 +57,7 @@ fn make_repo(name: &str) -> PathBuf {
     write(
         &dir,
         "Cargo.toml",
-        &format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+        &format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lints.clippy]\npedantic = {{ level = \"warn\", priority = -1 }}\n"),
     );
     write(&dir, "src/lib.rs", "pub fn base() {}\n");
     sh(&dir, "git", &["add", "-A"]);

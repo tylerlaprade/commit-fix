@@ -23,10 +23,12 @@
 //!   formatting ride along, gated on being byte-identical to rustfmt of
 //!   their blob.
 //! - Clippy runs whenever the commit stages Rust code or a manifest:
-//!   `cargo clippy --message-format=json -- --force-warn clippy::pedantic`
-//!   in the real tree (reuses the warm target dir; cargo may refresh a
-//!   stale Cargo.lock as part of resolution — the lock pass tolerates
-//!   that). Machine-applicable suggestions are applied crate-wide via
+//!   plain `cargo clippy --message-format=json` in the real tree, reusing
+//!   the warm target dir (cargo may refresh a stale Cargo.lock as part of
+//!   resolution — the lock pass tolerates that). Lint policy — pedantic
+//!   level, whitelisted lints — belongs in each repo's `[lints.clippy]`
+//!   manifest table, the one place every tool reads; this binary passes no
+//!   lint flags of its own. Machine-applicable suggestions are applied crate-wide via
 //!   rustfix to indexed blobs — auto-fixable means safe to apply
 //!   everywhere, so fixes ride along with whatever commit is in flight
 //!   (files with local edits are passed over, silently unless the file is
@@ -322,13 +324,7 @@ fn clippy_fix(
     pathspec_mode: bool,
 ) {
     let Ok(out) = Command::new("cargo")
-        .args([
-            "clippy",
-            "--message-format=json",
-            "--",
-            "--force-warn",
-            "clippy::pedantic",
-        ])
+        .args(["clippy", "--message-format=json"])
         .stderr(Stdio::null())
         .output()
     else {
