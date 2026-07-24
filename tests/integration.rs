@@ -262,6 +262,56 @@ fn fixable_lint_in_clean_unstaged_file_rides_along() {
 }
 
 #[test]
+fn workspace_member_repo_gets_clippy_fixes() {
+    // Mirrors the umbrella layout: the git repo is a MEMBER of an enclosing
+    // cargo workspace, so clippy diagnostics carry workspace-root-relative
+    // paths ("member/src/lib.rs"), not repo-relative ones. The hook must
+    // normalize them or it silently fixes nothing (the bug this guards).
+    let ws = std::env::temp_dir().join(format!(
+        "cfx-ws-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .subsec_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&ws);
+    std::fs::create_dir_all(&ws).unwrap();
+    std::fs::write(
+        ws.join("Cargo.toml"),
+        "[workspace]\nresolver = \"2\"\nmembers = [\"member\"]\n",
+    )
+    .unwrap();
+    let dir = ws.join("member");
+    std::fs::create_dir_all(&dir).unwrap();
+    sh(&dir, "git", &["init", "-q"]);
+    for (k, v) in [("user.email", "t@t"), ("user.name", "t"), ("commit.gpgsign", "false")] {
+        sh(&dir, "git", &["config", k, v]);
+    }
+    write(
+        &dir,
+        "Cargo.toml",
+        "[package]\nname = \"member\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lints.clippy]\npedantic = { level = \"warn\", priority = -1 }\n",
+    );
+    write(&dir, "src/lib.rs", "pub fn gives() -> i32 {\n    5\n}\n");
+    sh(&dir, "git", &["add", "-A"]);
+    sh(&dir, "git", &["commit", "-qm", "init"]);
+    // Stage a benign change so the hook runs its clippy pass.
+    write(
+        &dir,
+        "src/lib.rs",
+        "pub fn gives() -> i32 {\n    5\n}\npub fn more() {}\n",
+    );
+    sh(&dir, "git", &["add", "src/lib.rs"]);
+    run_hook(&dir, &[]);
+    assert!(
+        staged_blob(&dir, "src/lib.rs").contains("#[must_use]"),
+        "workspace-member diagnostics must be normalized and fixed"
+    );
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
+#[test]
 fn unfixable_clippy_warning_is_reported() {
     let dir = make_repo("lintreport");
     // clippy::missing_panics_doc: pedantic, fires on pub items, no auto-fix.

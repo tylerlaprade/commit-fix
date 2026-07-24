@@ -317,12 +317,40 @@ fn cargo_in(dir: &Path, args: &[&str]) -> bool {
 /// Pedantic lints ride along as advisory warnings (mirroring the editors'
 /// rust-analyzer config); carve-outs live in each repo's clippy.toml and
 /// crate attributes, which clippy honors natively.
+/// Diagnostic paths arrive relative to the CARGO WORKSPACE root (or
+/// absolute), not the git repo — for a repo that is a member of an
+/// enclosing workspace those differ. Resolve to repo-relative; None for
+/// files outside this repo (e.g. sibling path-dep diagnostics).
+fn repo_rel(file: &str, repo_root: &Path, ws_root: &Path) -> Option<String> {
+    let p = Path::new(file);
+    let abs = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        ws_root.join(p)
+    };
+    abs.strip_prefix(repo_root)
+        .ok()
+        .map(|r| r.to_string_lossy().into_owned())
+}
+
 fn clippy_fix(
+    repo_root: &Path,
     staged_set: &HashSet<&str>,
     pre_wip: &HashSet<String>,
     edition: &str,
     pathspec_mode: bool,
 ) {
+    let ws_root = output(
+        "cargo",
+        &["locate-project", "--workspace", "--message-format", "plain"],
+    )
+    .and_then(|o| {
+        Path::new(String::from_utf8_lossy(&o).trim())
+            .parent()
+            .map(Path::to_path_buf)
+    })
+    .and_then(|p| std::fs::canonicalize(p).ok())
+    .unwrap_or_else(|| repo_root.to_path_buf());
     let Ok(out) = Command::new("cargo")
         .args(["clippy", "--message-format=json"])
         .stderr(Stdio::null())
@@ -356,9 +384,12 @@ fn clippy_fix(
             // commit stages: remember it for the report. Debt in files the
             // commit doesn't touch is not this committer's noise (a repo
             // can carry hundreds of outstanding pedantic notes).
-            let at = msg["spans"][0]["file_name"].as_str().unwrap_or("?");
+            let raw = msg["spans"][0]["file_name"].as_str().unwrap_or("?");
+            let Some(at) = repo_rel(raw, repo_root, &ws_root) else {
+                continue;
+            };
             if msg["level"] == "warning"
-                && staged_set.contains(at)
+                && staged_set.contains(at.as_str())
                 && msg["code"]["code"]
                     .as_str()
                     .is_some_and(|c| c.starts_with("clippy::"))
@@ -376,12 +407,12 @@ fn clippy_fix(
                 .flat_map(|sol| sol.replacements.iter())
                 .map(|r| r.snippet.file_name.clone())
                 .collect();
-            // Single-file, repo-relative suggestions only: anything else
-            // (cross-file, absolute, or escaping the repo) is skipped.
+            // Single-file suggestions inside this repo only: cross-file
+            // suggestions and sibling-dep files are skipped.
             if files.len() == 1 {
                 let f = files.into_iter().next().unwrap();
-                if !f.starts_with('/') && !f.starts_with("..") {
-                    by_file.entry(f).or_default().push(s);
+                if let Some(rel) = repo_rel(&f, repo_root, &ws_root) {
+                    by_file.entry(rel).or_default().push(s);
                 }
             }
         }
@@ -508,6 +539,9 @@ pub fn run() {
         return; // not a git repo
     };
     let repo_root = PathBuf::from(String::from_utf8_lossy(&root).trim());
+    // Canonical form, so workspace-relative diagnostic paths strip cleanly
+    // even when temp dirs or symlinks give the two roots different spellings.
+    let repo_root = std::fs::canonicalize(&repo_root).unwrap_or(repo_root);
     if std::env::set_current_dir(&repo_root).is_err() || !repo_root.join("Cargo.toml").exists() {
         return;
     }
@@ -607,7 +641,7 @@ pub fn run() {
 
     // Clippy needs a build — only pay for it when the commit touches Rust.
     if commits_rust {
-        clippy_fix(&staged_set, &pre_wip, &edition, pathspec_mode);
+        clippy_fix(&repo_root, &staged_set, &pre_wip, &edition, pathspec_mode);
     }
     if commits_manifest {
         if pathspec_mode && !staged_set.contains("Cargo.lock") {
