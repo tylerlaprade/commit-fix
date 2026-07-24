@@ -240,6 +240,28 @@ fn clippy_fix_is_staged_when_safe() {
 }
 
 #[test]
+fn fixable_lint_in_clean_unstaged_file_rides_along() {
+    let dir = make_repo("sweep");
+    write(&dir, "src/lib.rs", "pub mod extra;\npub fn base() {}\n");
+    write(&dir, "src/extra.rs", "pub fn gives() -> i32 {\n    5\n}\n");
+    sh(&dir, "git", &["add", "-A"]);
+    sh(&dir, "git", &["commit", "-qm", "add extra"]);
+    // Stage an unrelated change; extra.rs is committed, clean, and carries
+    // a machine-fixable must_use_candidate.
+    write(
+        &dir,
+        "src/lib.rs",
+        "pub mod extra;\npub fn base() {}\npub fn more() {}\n",
+    );
+    sh(&dir, "git", &["add", "src/lib.rs"]);
+    run_hook(&dir, &[]);
+    assert!(
+        staged_blob(&dir, "src/extra.rs").contains("#[must_use]"),
+        "crate-wide fixable lint must ride along"
+    );
+}
+
+#[test]
 fn unfixable_clippy_warning_is_reported() {
     let dir = make_repo("lintreport");
     // clippy::missing_panics_doc: pedantic, fires on pub items, no auto-fix.

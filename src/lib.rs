@@ -26,12 +26,15 @@
 //!   `cargo clippy --message-format=json -- --force-warn clippy::pedantic`
 //!   in the real tree (reuses the warm target dir; cargo may refresh a
 //!   stale Cargo.lock as part of resolution — the lock pass tolerates
-//!   that). Machine-applicable suggestions are applied via rustfix to the
-//!   indexed blobs of the commit's own staged files; lints with no
-//!   automatic fix are summarized in one warning. Per-repo clippy.toml and
-//!   crate attributes are honored natively. If the tree doesn't compile —
-//!   someone's mid-edit code, anywhere in the dep graph — the pass skips
-//!   SILENTLY: that is the editing session's concern, not every
+//!   that). Machine-applicable suggestions are applied crate-wide via
+//!   rustfix to indexed blobs — auto-fixable means safe to apply
+//!   everywhere, so fixes ride along with whatever commit is in flight
+//!   (files with local edits are passed over, silently unless the file is
+//!   the commit's own). Lints with no automatic fix are summarized in one
+//!   warning covering only the commit's staged files. Per-repo clippy.toml
+//!   and crate attributes are honored natively. If the tree doesn't
+//!   compile — someone's mid-edit code, anywhere in the dep graph — the
+//!   pass skips SILENTLY: that is the editing session's concern, not every
 //!   committer's.
 //! - A commit that changes Cargo.toml gets Cargo.lock freshened and
 //!   staged. Non-workspace repos are resolved in a scratch export with
@@ -312,7 +315,12 @@ fn cargo_in(dir: &Path, args: &[&str]) -> bool {
 /// Pedantic lints ride along as advisory warnings (mirroring the editors'
 /// rust-analyzer config); carve-outs live in each repo's clippy.toml and
 /// crate attributes, which clippy honors natively.
-fn clippy_fix(staged_set: &HashSet<&str>, pre_wip: &HashSet<String>, edition: &str) {
+fn clippy_fix(
+    staged_set: &HashSet<&str>,
+    pre_wip: &HashSet<String>,
+    edition: &str,
+    pathspec_mode: bool,
+) {
     let Ok(out) = Command::new("cargo")
         .args([
             "clippy",
@@ -397,14 +405,19 @@ fn clippy_fix(staged_set: &HashSet<&str>, pre_wip: &HashSet<String>, edition: &s
     }
     let mut staged = Vec::new();
     for (file, sugs) in by_file {
-        // Fixes apply only to this commit's own files: with pedantic on,
-        // most files carry fixable suggestions, and sweeping crate-wide
-        // rewrites into an unrelated commit would break commit scoping.
-        if !staged_set.contains(file.as_str()) {
+        // Auto-fixable means safe to apply everywhere: fixes sweep the
+        // whole crate, riding along with whatever commit is in flight. In
+        // pathspec mode only the commit's own files (anything else would
+        // survive just as an index reversal).
+        if pathspec_mode && !staged_set.contains(file.as_str()) {
             continue;
         }
         if pre_wip.contains(&file) {
-            warn(&format!("clippy fix for {file} skipped: file has local edits"));
+            // Only the committer's own staged files earn a warning; a
+            // busy tree always has someone's WIP somewhere.
+            if staged_set.contains(file.as_str()) {
+                warn(&format!("clippy fix for {file} skipped: file has local edits"));
+            }
             continue;
         }
         // Suggestions carry byte offsets into the compiled source; they are
@@ -598,7 +611,7 @@ pub fn run() {
 
     // Clippy needs a build — only pay for it when the commit touches Rust.
     if commits_rust {
-        clippy_fix(&staged_set, &pre_wip, &edition);
+        clippy_fix(&staged_set, &pre_wip, &edition, pathspec_mode);
     }
     if commits_manifest {
         if pathspec_mode && !staged_set.contains("Cargo.lock") {
