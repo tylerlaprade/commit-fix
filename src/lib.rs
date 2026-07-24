@@ -1,30 +1,46 @@
-//! commit-fix: commit-time auto-fix that is safe when several agents or
-//! editors share one working tree.
+//! commit-fix: commit-time auto-fix built to raise the odds a problem is
+//! fixed before CI sees it, in trees that several agents or editors write
+//! to at once.
 //!
-//! Contract:
-//! - Never blocks and has no configuration: every failure degrades to a
-//!   stderr warning and the commit proceeds. CI is the enforcer of record;
-//!   `git commit --no-verify` is the skip.
-//! - No stashing, and never stages foreign content. A file with unstaged
-//!   modifications from before the run is skipped outright. Everything else
-//!   is staged content-addressed (`git hash-object` + `update-index`) from
-//!   bytes this process derived from the immutable index — the worktree is
-//!   never re-read at stage time, so a concurrent write can change nothing
-//!   about what gets committed.
-//! - `cargo fmt` runs repo-wide; a fix is staged only when the working copy
-//!   is byte-identical to rustfmt of the indexed blob (provably pure
-//!   formatting).
+//! Two hard floors, everything else best-effort:
+//! - Never blocks: every failure degrades to a stderr warning and the
+//!   commit proceeds. CI is the enforcer of record; `git commit
+//!   --no-verify` is the skip. No configuration exists.
+//! - Never stages foreign bytes: everything staged is content-addressed
+//!   (`git hash-object` + `update-index`) from bytes this process derived
+//!   from the immutable index — the worktree is never re-read at stage
+//!   time, so a concurrent write can change nothing about what gets
+//!   committed.
+//!
+//! What gets fixed:
+//! - Every staged `.rs` file is reformatted unconditionally: the staged
+//!   fix is rustfmt of the file's own indexed blob, a pure function of the
+//!   commit's content, so worktree contention is irrelevant to it. A
+//!   contended worktree copy is simply left alone (states converge when
+//!   its session commits). `cargo fmt` also runs repo-wide on the tree,
+//!   and clean unstaged files whose only change is that formatting ride
+//!   along — gated on being byte-identical to rustfmt of their blob.
 //! - Clippy fixes run whenever the commit stages Rust code or a manifest:
 //!   `cargo clippy --message-format=json` in the real tree (no scratch
-//!   build, reuses the warm target dir; touches no source, though cargo may
-//!   refresh a stale Cargo.lock as part of resolution — the lock pass
-//!   tolerates that), machine-applicable suggestions applied via rustfix to
-//!   the indexed blob, gated the same way.
-//! - A commit that changes Cargo.toml gets Cargo.lock freshened. Non-
-//!   workspace repos are resolved in a scratch export with `path = "../x"`
-//!   dependencies as flat siblings — a repo checked out inside an umbrella
-//!   workspace would otherwise resolve the umbrella's lock instead of its
-//!   own (the one its standalone CI uses).
+//!   build, reuses the warm target dir; cargo may refresh a stale
+//!   Cargo.lock as part of resolution — the lock pass tolerates that),
+//!   machine-applicable suggestions applied via rustfix to the indexed
+//!   blob. Clippy is the one best-effort fixer: its byte offsets are only
+//!   valid against the exact bytes it compiled, so a file whose working
+//!   copy differs from its blob is skipped with a warning.
+//! - A commit that changes Cargo.toml gets Cargo.lock freshened and
+//!   staged. Non-workspace repos are resolved in a scratch export with
+//!   `path = "../x"` dependencies as flat siblings — a repo checked out
+//!   inside an umbrella workspace would otherwise resolve the umbrella's
+//!   lock instead of its own (the one its standalone CI uses).
+//!
+//! Partial commits (`git commit <paths>`): git runs the hook against a
+//! throwaway next-index holding only the pathspec files, then re-stages
+//! those files' pre-hook bytes afterward. Staged-file fixes therefore land
+//! in the commit; ride-along and lock staging are suppressed (they would
+//! survive only as index reversals). The pathspec files themselves are
+//! left `MM` — real index holding the unfixed pre-hook bytes — which the
+//! next hook run re-fixes, collapsing the difference.
 
 use std::collections::{HashMap, HashSet};
 use std::io::Write as _;
@@ -364,26 +380,28 @@ fn clippy_fix(pre_wip: &HashSet<String>, edition: &str) {
     }
 }
 
-/// Freshen Cargo.lock for the pending commit. Resolution is authoritative
-/// and staging is decided by byte-compare against the staged lock — never by
-/// `--locked` against the tree, which cargo's own resolution during the
-/// clippy pass may already have satisfied. Ownership is judged against
-/// `lock_at_start` (the lock bytes before this run touched anything): only
-/// pre-existing local edits back us off; cargo's mid-run rewrites are
-/// machine noise this pass supersedes.
-fn freshen_lock(repo_root: &Path, pre_wip: &HashSet<String>, lock_at_start: Option<Vec<u8>>) {
+/// Freshen Cargo.lock for the pending commit. The staged bytes are derived
+/// from the commit's own manifest (index content), so staging is
+/// unconditional — decided by byte-compare against the staged lock, never
+/// by `--locked` against the tree, which cargo's own resolution during the
+/// clippy pass may already have satisfied. The tree copy is only synced
+/// when it was untouched since hook start (`lock_at_start`); a contended
+/// tree lock is left alone.
+fn freshen_lock(repo_root: &Path, lock_at_start: Option<Vec<u8>>) {
     let is_workspace = std::fs::read_to_string(repo_root.join("Cargo.toml"))
         .is_ok_and(|s| s.lines().any(is_workspace_header));
     let staged_lock = index_blob("Cargo.lock");
-    if pre_wip.contains("Cargo.lock") || staged_lock != lock_at_start {
-        if !cargo_in(repo_root, &["metadata", "--locked", "--format-version", "1"]) {
-            warn("Cargo.lock is stale but has local edits; leaving it alone (CI will fail)");
-        }
-        return;
-    }
 
     let new_bytes = if is_workspace {
         // In-place: the root lock is the right lock for a workspace root.
+        // Resolution rewrites the tree lock, so back off when the tree copy
+        // carries someone's pre-run edits.
+        if staged_lock != lock_at_start {
+            if !cargo_in(repo_root, &["metadata", "--locked", "--format-version", "1"]) {
+                warn("workspace Cargo.lock is stale but has local edits; leaving it alone (CI will fail)");
+            }
+            return;
+        }
         if !cargo_in(repo_root, &["metadata", "--format-version", "1"]) {
             warn("workspace Cargo.lock could not be resolved (CI will fail)");
             return;
@@ -393,6 +411,8 @@ fn freshen_lock(repo_root: &Path, pre_wip: &HashSet<String>, lock_at_start: Opti
         };
         bytes
     } else {
+        // Standalone: resolve in the scratch export — index-derived, so
+        // tree contention never blocks the staged fix.
         let Some(scratch) = Scratch::build(repo_root) else {
             return;
         };
@@ -404,7 +424,10 @@ fn freshen_lock(repo_root: &Path, pre_wip: &HashSet<String>, lock_at_start: Opti
         let Ok(bytes) = std::fs::read(selfd.join("Cargo.lock")) else {
             return;
         };
-        let _ = std::fs::write(repo_root.join("Cargo.lock"), &bytes);
+        // Sync the tree copy only when it was untouched at hook start.
+        if lock_at_start == staged_lock {
+            let _ = std::fs::write(repo_root.join("Cargo.lock"), &bytes);
+        }
         bytes
     };
 
@@ -423,17 +446,14 @@ pub fn run() {
         return;
     }
 
-    // Partial commit (`git commit <pathspec>`): git runs hooks against a
-    // throwaway next-index and folds only the pathspec paths back, so
-    // anything staged here becomes a silent revert later. Stand down.
-    if std::env::var("GIT_INDEX_FILE").is_ok_and(|f| {
+    // Partial commit (`git commit <pathspec>`): the throwaway next-index
+    // means only fixes to the staged (pathspec) files survive into the
+    // commit; anything else staged here would linger as an index reversal.
+    let pathspec_mode = std::env::var("GIT_INDEX_FILE").is_ok_and(|f| {
         Path::new(&f)
             .file_name()
             .is_some_and(|n| n.to_string_lossy().starts_with("next-index-"))
-    }) {
-        warn("partial commit: auto-fix skipped");
-        return;
-    }
+    });
 
     // Nothing staged (message-only amend etc.)? A failure here means no HEAD
     // yet (initial commit) — proceed in that case.
@@ -441,7 +461,8 @@ pub fn run() {
         return;
     }
 
-    // Unstaged-modified files before we touch anything: never stage these.
+    // Unstaged-modified files before we touch anything: ride-along cleanup
+    // never stages these (their tree state is someone's work in progress).
     let pre_wip: HashSet<String> = git_paths(&["diff", "--name-only", "-z"])
         .unwrap_or_default()
         .into_iter()
@@ -452,12 +473,41 @@ pub fn run() {
 
     let edition = manifest_edition(&repo_root);
 
-    // Tree-wide format, then stage only provably-pure formatting changes,
-    // content-addressed from the validated bytes.
-    if status_ok("cargo", &["fmt"], None) {
-        let mut staged = Vec::new();
+    // Staged paths; on a no-HEAD initial commit fall back to the full index.
+    let staged_names = git_paths(&["diff", "--cached", "--name-only", "-z"])
+        .or_else(|| git_paths(&["ls-files", "-z"]))
+        .unwrap_or_default();
+    let staged_set: HashSet<&str> = staged_names.iter().map(String::as_str).collect();
+
+    let fmt_ok = status_ok("cargo", &["fmt"], None);
+    if !fmt_ok {
+        warn("cargo fmt failed; tree formatting unchecked for this commit");
+    }
+
+    // Staged .rs files are fixed unconditionally: the staged bytes are
+    // rustfmt of each file's own indexed blob — a pure function of the
+    // commit's content — so worktree contention is irrelevant here. This
+    // needs no working `cargo fmt` either; rustfmt alone suffices.
+    let mut staged = Vec::new();
+    for f in staged_names.iter().filter(|p| p.ends_with(".rs")) {
+        let Some(blob) = index_blob(f) else {
+            continue; // e.g. staged deletion
+        };
+        let Some(want) = rustfmt(&blob, &edition) else {
+            warn(&format!("could not format staged {f} (CI will fail)"));
+            continue;
+        };
+        if want != blob && stage_bytes(f, &want) {
+            staged.push(f.clone());
+        }
+    }
+
+    // Ride-along cleanup of unstaged files: only provably-pure formatting
+    // changes on files nobody was editing, and never in pathspec mode
+    // (git would keep them only as index reversals).
+    if fmt_ok && !pathspec_mode {
         for f in git_paths(&["diff", "--name-only", "-z", "--", "*.rs"]).unwrap_or_default() {
-            if pre_wip.contains(&f) {
+            if staged_set.contains(f.as_str()) || pre_wip.contains(&f) {
                 continue;
             }
             let Some(want) = pure_fmt_bytes(&f, &edition) else {
@@ -467,17 +517,11 @@ pub fn run() {
                 staged.push(f);
             }
         }
-        if !staged.is_empty() {
-            eprintln!("commit-fix: rustfmt fixed {}", staged.join(" "));
-        }
-    } else {
-        warn("cargo fmt failed; formatting unchecked for this commit");
+    }
+    if !staged.is_empty() {
+        eprintln!("commit-fix: rustfmt fixed {}", staged.join(" "));
     }
 
-    // Staged paths; on a no-HEAD initial commit fall back to the full index.
-    let staged_names = git_paths(&["diff", "--cached", "--name-only", "-z"])
-        .or_else(|| git_paths(&["ls-files", "-z"]))
-        .unwrap_or_default();
     let commits_rust = staged_names
         .iter()
         .any(|p| p.ends_with(".rs") || p.ends_with("Cargo.toml") || p.ends_with("Cargo.lock"));
@@ -488,6 +532,12 @@ pub fn run() {
         clippy_fix(&pre_wip, &edition);
     }
     if commits_manifest {
-        freshen_lock(&repo_root, &pre_wip, lock_at_start);
+        if pathspec_mode && !staged_set.contains("Cargo.lock") {
+            // Staging the lock into the next-index would only linger as a
+            // reversal; the commit ships whatever lock it staged (or none).
+            warn("partial commit changes Cargo.toml without Cargo.lock; lock not freshened (CI may fail)");
+        } else {
+            freshen_lock(&repo_root, lock_at_start);
+        }
     }
 }

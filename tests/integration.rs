@@ -127,19 +127,58 @@ fn purity_gate_rejects_foreign_content() {
 }
 
 #[test]
-fn pathspec_commit_stands_down() {
+fn pathspec_commit_gets_fixed() {
+    // A real `git commit <path>` with the binary installed as the real
+    // pre-commit hook, so git's temp-index reconciliation is exercised.
     let dir = make_repo("pathspec");
+    let hooks = dir.join("hookdir");
+    std::fs::create_dir_all(&hooks).unwrap();
+    std::fs::write(
+        hooks.join("pre-commit"),
+        format!("#!/bin/sh\n{BIN}\nexit 0\n"),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(hooks.join("pre-commit"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+    }
+    sh(&dir, "git", &["config", "core.hooksPath", &hooks.to_string_lossy()]);
+    write(&dir, "src/lib.rs", UNFORMATTED);
+    sh(&dir, "git", &["commit", "-qm", "pathspec", "src/lib.rs"]);
+    assert_eq!(
+        git(&dir, &["show", "HEAD:src/lib.rs"]),
+        FORMATTED,
+        "pathspec commit must ship the fmt fix"
+    );
+    // Git re-stages the pathspec file's PRE-hook bytes after the commit, so
+    // the file is left MM (index = unfixed bytes, tree = cargo-fmt'd). The
+    // next hook run re-formats that blob, collapsing the difference.
+    assert_eq!(
+        git(&dir, &["status", "--porcelain", "--", "src/lib.rs"]),
+        "MM src/lib.rs\n"
+    );
+}
+
+#[test]
+fn contended_staged_file_still_gets_fixed() {
+    // Another session's edits on top of the staged file must not block the
+    // staged fix, and must never leak into it.
+    let dir = make_repo("contended");
     write(&dir, "src/lib.rs", UNFORMATTED);
     sh(&dir, "git", &["add", "src/lib.rs"]);
-    let fake_index = dir.join(".git/next-index-42.lock");
-    std::fs::copy(dir.join(".git/index"), &fake_index).unwrap();
-    let mut c = Command::new(BIN);
-    c.current_dir(&dir)
-        .env("GIT_INDEX_FILE", &fake_index);
-    let out = c.output().unwrap();
-    assert!(out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("partial commit"));
-    assert_eq!(staged_blob(&dir, "src/lib.rs"), UNFORMATTED, "must not touch the index");
+    write(
+        &dir,
+        "src/lib.rs",
+        &format!("{UNFORMATTED}pub fn foreign_wip() {{}}\n"),
+    );
+    run_hook(&dir, &[]);
+    let blob = staged_blob(&dir, "src/lib.rs");
+    assert_eq!(blob, FORMATTED, "staged content must be fixed despite contention");
+    assert!(!blob.contains("foreign_wip"), "foreign bytes must never be staged");
+    let tree = std::fs::read_to_string(dir.join("src/lib.rs")).unwrap();
+    assert!(tree.contains("foreign_wip"), "the WIP tree copy must survive");
 }
 
 #[test]
