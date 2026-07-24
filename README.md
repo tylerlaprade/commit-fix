@@ -15,16 +15,17 @@ On every commit:
    formatted repo-wide, one rustfmt per tracked file (so one unparseable
    mid-edit file never blocks the rest), and clean unstaged files whose only
    change is that formatting ride along into the commit.
-2. If the commit stages Rust code or a manifest, runs `cargo clippy`
-   in diagnostic mode with pedantic lints as advisory warnings (no scratch
-   build — it reuses your warm target dir). Machine-applicable fixes are
-   applied via [rustfix](https://crates.io/crates/rustfix) to the commit's
-   own staged files; lints with no automatic fix are summarized in a single
-   warning line. Per-repo `clippy.toml` and crate attributes are honored
-   natively. A tree that doesn't compile — someone's mid-edit code anywhere
-   in the dep graph — skips this pass *silently*: that is the editing
-   session's concern, not every committer's. Commits that touch no Rust
-   never pay for a build.
+2. If the commit stages Rust code or a manifest, runs plain `cargo clippy`
+   in diagnostic mode (no scratch build — it reuses your warm target dir)
+   and applies machine-applicable fixes crate-wide via
+   [rustfix](https://crates.io/crates/rustfix). Lint policy is whatever
+   your `[lints]` table, `clippy.toml`, and crate attributes say —
+   commit-fix passes no lint flags of its own. Lints with no automatic fix
+   in the commit's own files are summarized in one warning line. A tree
+   that doesn't compile — someone's mid-edit code anywhere in the dep
+   graph — skips this pass *silently*: that is the editing session's
+   concern, not every committer's. Commits that touch no Rust never pay
+   for a build.
 3. If the commit changes `Cargo.toml`, freshens `Cargo.lock` and stages it —
    including the case where the repo is checked out inside an umbrella
    workspace but CI builds it standalone (resolution runs in a momentary
@@ -54,7 +55,8 @@ never lets ambiguous bytes into a commit:
   rustfmt of its blob. A clippy fix applies only when the working copy still
   equals the blob its diagnostics were computed against — the one
   best-effort fixer, since its byte offsets are meaningless against any
-  other content; contended files get a named warning instead.
+  other content. A contended file in the commit itself gets a named
+  warning; contended bystanders are passed over silently.
 - Partial commits (`git commit <paths>`) get their staged files fixed in the
   commit; ride-along and lock staging are suppressed there (git's throwaway
   `next-index` would keep them only as index reversals).

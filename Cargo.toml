@@ -2,9 +2,9 @@
 name = "commit-fix"
 version = "0.2.0"
 edition = "2021"
-description = "Stashless commit-time auto-fix for Rust (fmt, opt-in clippy --fix, lockfile freshening), safe with concurrent writers in one working tree."
+description = "Zero-config pre-commit auto-fix for Rust: rustfmt, clippy fixes, and lockfile freshening staged into the commit — safe with concurrent writers, never blocks."
 license = "MIT"
-repository = "https://github.com/tylerlaprade/lint-staged-rs"
+repository = "https://github.com/tylerlaprade/commit-fix"
 keywords = ["git", "hooks", "lint", "format", "pre-commit"]
 categories = ["development-tools"]
 readme = "README.md"
