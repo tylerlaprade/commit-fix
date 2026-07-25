@@ -101,7 +101,10 @@ fn never_stages_preexisting_wip() {
     run_hook(&dir, &[]);
     let staged = git(&dir, &["diff", "--cached", "--name-only"]);
     assert!(staged.contains("src/lib.rs"));
-    assert!(!staged.contains("src/other.rs"), "WIP file must stay unstaged");
+    assert!(
+        !staged.contains("src/other.rs"),
+        "WIP file must stay unstaged"
+    );
     assert_eq!(staged_blob(&dir, "src/other.rs"), "pub fn committed() {}\n");
 }
 
@@ -143,10 +146,17 @@ fn pathspec_commit_gets_fixed() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(hooks.join("pre-commit"), std::fs::Permissions::from_mode(0o755))
-            .unwrap();
+        std::fs::set_permissions(
+            hooks.join("pre-commit"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
     }
-    sh(&dir, "git", &["config", "core.hooksPath", &hooks.to_string_lossy()]);
+    sh(
+        &dir,
+        "git",
+        &["config", "core.hooksPath", &hooks.to_string_lossy()],
+    );
     write(&dir, "src/lib.rs", UNFORMATTED);
     sh(&dir, "git", &["commit", "-qm", "pathspec", "src/lib.rs"]);
     assert_eq!(
@@ -177,19 +187,28 @@ fn contended_staged_file_still_gets_fixed() {
     );
     run_hook(&dir, &[]);
     let blob = staged_blob(&dir, "src/lib.rs");
-    assert_eq!(blob, FORMATTED, "staged content must be fixed despite contention");
-    assert!(!blob.contains("foreign_wip"), "foreign bytes must never be staged");
+    assert_eq!(
+        blob, FORMATTED,
+        "staged content must be fixed despite contention"
+    );
+    assert!(
+        !blob.contains("foreign_wip"),
+        "foreign bytes must never be staged"
+    );
     let tree = std::fs::read_to_string(dir.join("src/lib.rs")).unwrap();
-    assert!(tree.contains("foreign_wip"), "the WIP tree copy must survive");
+    assert!(
+        tree.contains("foreign_wip"),
+        "the WIP tree copy must survive"
+    );
 }
 
 #[test]
 fn regenerates_standalone_lock_with_sibling_dep() {
     let parent = make_repo("parent-scope"); // just to get a unique temp parent
-    let parent = parent.parent().unwrap().join(format!(
-        "cfx-lockland-{}",
-        std::process::id()
-    ));
+    let parent = parent
+        .parent()
+        .unwrap()
+        .join(format!("cfx-lockland-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&parent);
     std::fs::create_dir_all(&parent).unwrap();
 
@@ -197,10 +216,18 @@ fn regenerates_standalone_lock_with_sibling_dep() {
     let dep = parent.join("depcrate");
     std::fs::create_dir_all(&dep).unwrap();
     sh(&dep, "git", &["init", "-q"]);
-    for (k, v) in [("user.email", "t@t"), ("user.name", "t"), ("commit.gpgsign", "false")] {
+    for (k, v) in [
+        ("user.email", "t@t"),
+        ("user.name", "t"),
+        ("commit.gpgsign", "false"),
+    ] {
         sh(&dep, "git", &["config", k, v]);
     }
-    write(&dep, "Cargo.toml", "[package]\nname = \"depcrate\"\nversion = \"0.1.0\"\nedition = \"2021\"\n");
+    write(
+        &dep,
+        "Cargo.toml",
+        "[package]\nname = \"depcrate\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
     write(&dep, "src/lib.rs", "pub fn dep() {}\n");
     sh(&dep, "git", &["add", "-A"]);
     sh(&dep, "git", &["commit", "-qm", "init"]);
@@ -210,7 +237,11 @@ fn regenerates_standalone_lock_with_sibling_dep() {
     let main = parent.join("maincrate");
     std::fs::create_dir_all(&main).unwrap();
     sh(&main, "git", &["init", "-q"]);
-    for (k, v) in [("user.email", "t@t"), ("user.name", "t"), ("commit.gpgsign", "false")] {
+    for (k, v) in [
+        ("user.email", "t@t"),
+        ("user.name", "t"),
+        ("commit.gpgsign", "false"),
+    ] {
         sh(&main, "git", &["config", k, v]);
     }
     write(&main, "Cargo.toml", "[package]\nname = \"maincrate\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n");
@@ -222,7 +253,10 @@ fn regenerates_standalone_lock_with_sibling_dep() {
     sh(&main, "git", &["add", "Cargo.toml"]);
     run_hook(&main, &[]);
     let staged = git(&main, &["diff", "--cached", "--name-only"]);
-    assert!(staged.contains("Cargo.lock"), "lock must be staged: {staged}");
+    assert!(
+        staged.contains("Cargo.lock"),
+        "lock must be staged: {staged}"
+    );
     assert!(staged_blob(&main, "Cargo.lock").contains("depcrate"));
     let _ = std::fs::remove_dir_all(&parent);
 }
@@ -235,8 +269,14 @@ fn clippy_fix_is_staged_when_safe() {
     sh(&dir, "git", &["add", "src/lib.rs"]);
     run_hook(&dir, &[]);
     let blob = staged_blob(&dir, "src/lib.rs");
-    assert!(blob.contains("v.contains(&x)"), "clippy fix not staged: {blob}");
-    assert_eq!(std::fs::read_to_string(dir.join("src/lib.rs")).unwrap(), blob);
+    assert!(
+        blob.contains("v.contains(&x)"),
+        "clippy fix not staged: {blob}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("src/lib.rs")).unwrap(),
+        blob
+    );
 }
 
 #[test]
@@ -285,7 +325,11 @@ fn workspace_member_repo_gets_clippy_fixes() {
     let dir = ws.join("member");
     std::fs::create_dir_all(&dir).unwrap();
     sh(&dir, "git", &["init", "-q"]);
-    for (k, v) in [("user.email", "t@t"), ("user.name", "t"), ("commit.gpgsign", "false")] {
+    for (k, v) in [
+        ("user.email", "t@t"),
+        ("user.name", "t"),
+        ("commit.gpgsign", "false"),
+    ] {
         sh(&dir, "git", &["config", k, v]);
     }
     write(
@@ -366,4 +410,3 @@ fn never_blocks_when_cargo_missing() {
     );
     assert_eq!(staged_blob(&dir, "src/lib.rs"), UNFORMATTED);
 }
-

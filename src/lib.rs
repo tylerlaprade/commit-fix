@@ -159,7 +159,11 @@ fn manifest_edition(dir: &Path) -> String {
         .ok()
         .and_then(|s| {
             s.lines().find_map(|l| {
-                let rest = l.trim().strip_prefix("edition")?.trim_start().strip_prefix('=')?;
+                let rest = l
+                    .trim()
+                    .strip_prefix("edition")?
+                    .trim_start()
+                    .strip_prefix('=')?;
                 let val = rest.trim().trim_matches('"');
                 (!val.is_empty() && val.bytes().all(|b| b.is_ascii_digit()))
                     .then(|| val.to_string())
@@ -267,8 +271,7 @@ impl Scratch {
             .duration_since(std::time::UNIX_EPOCH)
             .ok()?
             .subsec_nanos();
-        let root =
-            std::env::temp_dir().join(format!("commit-fix-{}-{nanos}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("commit-fix-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&root).ok()?;
         let scratch = Scratch { root };
 
@@ -427,7 +430,11 @@ fn clippy_fix(
         unfixable.dedup();
         let shown = unfixable.iter().take(10).cloned().collect::<Vec<_>>();
         let more = unfixable.len().saturating_sub(10);
-        let suffix = if more > 0 { format!(" (+{more} more)") } else { String::new() };
+        let suffix = if more > 0 {
+            format!(" (+{more} more)")
+        } else {
+            String::new()
+        };
         warn(&format!("clippy: {}{suffix}", shown.join(", ")));
     }
     let mut staged = Vec::new();
@@ -443,7 +450,9 @@ fn clippy_fix(
             // Only the committer's own staged files earn a warning; a
             // busy tree always has someone's WIP somewhere.
             if staged_set.contains(file.as_str()) {
-                warn(&format!("clippy fix for {file} skipped: file has local edits"));
+                warn(&format!(
+                    "clippy fix for {file} skipped: file has local edits"
+                ));
             }
             continue;
         }
@@ -454,14 +463,18 @@ fn clippy_fix(
             continue;
         };
         if std::fs::read(&file).map(|w| w != blob).unwrap_or(true) {
-            warn(&format!("clippy fix for {file} skipped: file has local edits"));
+            warn(&format!(
+                "clippy fix for {file} skipped: file has local edits"
+            ));
             continue;
         }
         let Ok(code) = String::from_utf8(blob) else {
             continue;
         };
         let Ok(fixed) = rustfix::apply_suggestions(&code, &sugs) else {
-            warn(&format!("clippy fix for {file} did not apply cleanly; skipped"));
+            warn(&format!(
+                "clippy fix for {file} did not apply cleanly; skipped"
+            ));
             continue;
         };
         let fixed = rustfmt(fixed.as_bytes(), edition).unwrap_or_else(|| fixed.into_bytes());
@@ -494,7 +507,10 @@ fn freshen_lock(repo_root: &Path, lock_at_start: Option<Vec<u8>>) {
         // Resolution rewrites the tree lock, so back off when the tree copy
         // carries someone's pre-run edits.
         if staged_lock != lock_at_start {
-            if !cargo_in(repo_root, &["metadata", "--locked", "--format-version", "1"]) {
+            if !cargo_in(
+                repo_root,
+                &["metadata", "--locked", "--format-version", "1"],
+            ) {
                 warn("workspace Cargo.lock is stale but has local edits; leaving it alone (CI will fail)");
             }
             return;
