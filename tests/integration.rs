@@ -262,9 +262,9 @@ fn regenerates_standalone_lock_with_sibling_dep() {
 }
 
 #[test]
-fn clippy_fix_is_staged_when_safe() {
+fn denied_clippy_fix_is_staged_when_safe() {
     let dir = make_repo("clippy");
-    let lint = "pub fn has(v: &[i32], x: i32) -> bool {\n    v.iter().any(|a| *a == x)\n}\n";
+    let lint = "#![deny(clippy::manual_contains)]\npub fn has(v: &[i32], x: i32) -> bool {\n    v.iter().any(|a| *a == x)\n}\n";
     write(&dir, "src/lib.rs", lint);
     sh(&dir, "git", &["add", "src/lib.rs"]);
     run_hook(&dir, &[]);
@@ -358,8 +358,7 @@ fn workspace_member_repo_gets_clippy_fixes() {
 #[test]
 fn unfixable_clippy_warning_is_reported() {
     let dir = make_repo("lintreport");
-    // clippy::missing_panics_doc: pedantic, fires on pub items, no auto-fix.
-    let code = "pub fn head(v: &[i32]) -> i32 {\n    *v.first().unwrap()\n}\n";
+    let code = "#![warn(clippy::missing_panics_doc)]\npub fn head(v: &[i32]) -> i32 {\n    *v.first().unwrap()\n}\n";
     write(&dir, "src/lib.rs", code);
     sh(&dir, "git", &["add", "src/lib.rs"]);
     let out = Command::new(BIN).current_dir(&dir).output().unwrap();

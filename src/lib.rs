@@ -317,9 +317,6 @@ fn cargo_in(dir: &Path, args: &[&str]) -> bool {
 /// Run clippy in diagnostic mode (reuses the warm target dir) and stage its
 /// machine-applicable fixes for the commit's own staged files, each applied
 /// via rustfix to the indexed blob and gated on an untouched working copy.
-/// Pedantic lints ride along as advisory warnings (mirroring the editors'
-/// rust-analyzer config); carve-outs live in each repo's clippy.toml and
-/// crate attributes, which clippy honors natively.
 /// Diagnostic paths arrive relative to the CARGO WORKSPACE root (or
 /// absolute), not the git repo — for a repo that is a member of an
 /// enclosing workspace those differ. Resolve to repo-relative; None for
@@ -334,6 +331,14 @@ fn repo_rel(file: &str, repo_root: &Path, ws_root: &Path) -> Option<String> {
     abs.strip_prefix(repo_root)
         .ok()
         .map(|r| r.to_string_lossy().into_owned())
+}
+
+fn lint_code(message: &serde_json::Value) -> Option<&str> {
+    let code = message["code"]["code"].as_str()?;
+    let bytes = code.as_bytes();
+    let hard_error_code =
+        bytes.len() == 5 && bytes[0] == b'E' && bytes[1..].iter().all(u8::is_ascii_digit);
+    (!hard_error_code).then_some(code)
 }
 
 fn clippy_fix(
@@ -362,7 +367,8 @@ fn clippy_fix(
         return; // no cargo — the staged fmt pass already warned
     };
     let text = String::from_utf8_lossy(&out.stdout);
-    let mut compile_error = !out.status.success();
+    let mut compile_error = false;
+    let mut lint_error = false;
     let mut by_file: HashMap<String, Vec<rustfix::Suggestion>> = HashMap::new();
     let mut unfixable: Vec<String> = Vec::new();
     for line in text.lines() {
@@ -374,7 +380,11 @@ fn clippy_fix(
         }
         let msg = &v["message"];
         if msg["level"] == "error" {
-            compile_error = true;
+            if lint_code(msg).is_some() {
+                lint_error = true;
+            } else {
+                compile_error = true;
+            }
         }
         let sugs = rustfix::get_suggestions_from_json(
             &msg.to_string(),
@@ -391,11 +401,9 @@ fn clippy_fix(
             let Some(at) = repo_rel(raw, repo_root, &ws_root) else {
                 continue;
             };
-            if msg["level"] == "warning"
+            if (msg["level"] == "warning" || msg["level"] == "error")
                 && staged_set.contains(at.as_str())
-                && msg["code"]["code"]
-                    .as_str()
-                    .is_some_and(|c| c.starts_with("clippy::"))
+                && lint_code(msg).is_some_and(|c| c.starts_with("clippy::"))
             {
                 let code = msg["code"]["code"].as_str().unwrap_or("clippy");
                 let ln = msg["spans"][0]["line_start"].as_u64().unwrap_or(0);
@@ -419,6 +427,9 @@ fn clippy_fix(
                 }
             }
         }
+    }
+    if !out.status.success() && !lint_error {
+        compile_error = true;
     }
     if compile_error {
         // Someone's mid-edit code doesn't compile. That is their session's
