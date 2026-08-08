@@ -1,8 +1,8 @@
 # commit-fix
 
-Commit-time auto-fix for Rust that is safe when several agents or editors
-share one working tree. Prior art: [lint-staged](https://github.com/lint-staged/lint-staged),
-minus the stash — and minus the config. There are no options.
+Fix Rust code as you commit without disturbing concurrent work. Prior art:
+[lint-staged](https://github.com/lint-staged/lint-staged), minus the stash — and
+minus the config. There are no options.
 
 ## What it does
 

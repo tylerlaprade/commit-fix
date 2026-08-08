@@ -196,6 +196,7 @@ fn pure_fmt_bytes(path: &str, edition: &str) -> Option<Vec<u8>> {
 
 /// True when the working copy of `path` is exactly rustfmt of its indexed
 /// blob — i.e. the on-disk change is provably pure formatting.
+#[must_use]
 pub fn is_pure_fmt(path: &str, edition: &str) -> bool {
     pure_fmt_bytes(path, edition).is_some()
 }
@@ -473,7 +474,7 @@ fn clippy_fix(
         let Some(blob) = index_blob(&file) else {
             continue;
         };
-        if std::fs::read(&file).map(|w| w != blob).unwrap_or(true) {
+        if std::fs::read(&file).map_or(true, |w| w != blob) {
             warn(&format!(
                 "clippy fix for {file} skipped: file has local edits"
             ));
