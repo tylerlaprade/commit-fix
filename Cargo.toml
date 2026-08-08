@@ -1,6 +1,6 @@
 [package]
 name = "commit-fix"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 description = "Fix Rust code as you commit without disturbing concurrent work."
 license = "GPL-3.0-only"
