@@ -57,7 +57,9 @@ fn make_repo(name: &str) -> PathBuf {
     write(
         &dir,
         "Cargo.toml",
-        &format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lints.clippy]\npedantic = {{ level = \"warn\", priority = -1 }}\n"),
+        &format!(
+            "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lints.clippy]\npedantic = {{ level = \"warn\", priority = -1 }}\n"
+        ),
     );
     write(&dir, "src/lib.rs", "pub fn base() {}\n");
     sh(&dir, "git", &["add", "-A"]);
@@ -244,12 +246,20 @@ fn regenerates_standalone_lock_with_sibling_dep() {
     ] {
         sh(&main, "git", &["config", k, v]);
     }
-    write(&main, "Cargo.toml", "[package]\nname = \"maincrate\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n");
+    write(
+        &main,
+        "Cargo.toml",
+        "[package]\nname = \"maincrate\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n",
+    );
     write(&main, "src/lib.rs", "pub fn m() {}\n");
     sh(&main, "cargo", &["metadata", "--format-version", "1"]);
     sh(&main, "git", &["add", "-A"]);
     sh(&main, "git", &["commit", "-qm", "init"]);
-    write(&main, "Cargo.toml", "[package]\nname = \"maincrate\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ndepcrate = { path = \"../depcrate\" }\n");
+    write(
+        &main,
+        "Cargo.toml",
+        "[package]\nname = \"maincrate\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ndepcrate = { path = \"../depcrate\" }\n",
+    );
     sh(&main, "git", &["add", "Cargo.toml"]);
     run_hook(&main, &[]);
     let staged = git(&main, &["diff", "--cached", "--name-only"]);

@@ -523,7 +523,9 @@ fn freshen_lock(repo_root: &Path, lock_at_start: Option<Vec<u8>>) {
                 repo_root,
                 &["metadata", "--locked", "--format-version", "1"],
             ) {
-                warn("workspace Cargo.lock is stale but has local edits; leaving it alone (CI will fail)");
+                warn(
+                    "workspace Cargo.lock is stale but has local edits; leaving it alone (CI will fail)",
+                );
             }
             return;
         }
@@ -675,7 +677,9 @@ pub fn run() {
         if pathspec_mode && !staged_set.contains("Cargo.lock") {
             // Staging the lock into the next-index would only linger as a
             // reversal; the commit ships whatever lock it staged (or none).
-            warn("partial commit changes Cargo.toml without Cargo.lock; lock not freshened (CI may fail)");
+            warn(
+                "partial commit changes Cargo.toml without Cargo.lock; lock not freshened (CI may fail)",
+            );
         } else {
             freshen_lock(&repo_root, lock_at_start);
         }
