@@ -92,6 +92,16 @@ fn git_paths(args: &[&str]) -> Option<Vec<String>> {
 }
 
 /// The staged blob for a path, from the index.
+fn is_rust_source(path: &str) -> bool {
+    Path::new(path)
+        .extension()
+        .is_some_and(|extension| extension == "rs")
+}
+
+fn is_named(path: &str, name: &str) -> bool {
+    Path::new(path).file_name().is_some_and(|file| file == name)
+}
+
 fn index_blob(path: &str) -> Option<Vec<u8>> {
     output("git", &["show", &format!(":{path}")])
 }
@@ -221,7 +231,7 @@ fn sibling_deps(manifest_dir: &Path) -> Vec<String> {
             let l = l.split('#').next().unwrap_or("");
             let (key, rest) = l.split_once('=')?;
             let key = key.trim();
-            let is_path_key = key == "path" || key.ends_with(".path");
+            let is_path_key = key.rsplit('.').next() == Some("path");
             let inline = rest.contains("path");
             if !is_path_key && !inline {
                 return None;
@@ -509,7 +519,7 @@ fn clippy_fix(
 /// clippy pass may already have satisfied. The tree copy is only synced
 /// when it was untouched since hook start (`lock_at_start`); a contended
 /// tree lock is left alone.
-fn freshen_lock(repo_root: &Path, lock_at_start: Option<Vec<u8>>) {
+fn freshen_lock(repo_root: &Path, lock_at_start: Option<&[u8]>) {
     let is_workspace = std::fs::read_to_string(repo_root.join("Cargo.toml"))
         .is_ok_and(|s| s.lines().any(is_workspace_header));
     let staged_lock = index_blob("Cargo.lock");
@@ -518,7 +528,7 @@ fn freshen_lock(repo_root: &Path, lock_at_start: Option<Vec<u8>>) {
         // In-place: the root lock is the right lock for a workspace root.
         // Resolution rewrites the tree lock, so back off when the tree copy
         // carries someone's pre-run edits.
-        if staged_lock != lock_at_start {
+        if staged_lock.as_deref() != lock_at_start {
             if !cargo_in(
                 repo_root,
                 &["metadata", "--locked", "--format-version", "1"],
@@ -552,7 +562,7 @@ fn freshen_lock(repo_root: &Path, lock_at_start: Option<Vec<u8>>) {
             return;
         };
         // Sync the tree copy only when it was untouched at hook start.
-        if lock_at_start == staged_lock {
+        if lock_at_start == staged_lock.as_deref() {
             let _ = std::fs::write(repo_root.join("Cargo.lock"), &bytes);
         }
         bytes
@@ -631,7 +641,7 @@ pub fn run() {
     // commit's content — so worktree contention is irrelevant here. This
     // needs no working `cargo fmt` either; rustfmt alone suffices.
     let mut staged = Vec::new();
-    for f in staged_names.iter().filter(|p| p.ends_with(".rs")) {
+    for f in staged_names.iter().filter(|p| is_rust_source(p)) {
         let Some(blob) = index_blob(f) else {
             continue; // e.g. staged deletion
         };
@@ -666,8 +676,8 @@ pub fn run() {
 
     let commits_rust = staged_names
         .iter()
-        .any(|p| p.ends_with(".rs") || p.ends_with("Cargo.toml") || p.ends_with("Cargo.lock"));
-    let commits_manifest = staged_names.iter().any(|p| p.ends_with("Cargo.toml"));
+        .any(|p| is_rust_source(p) || is_named(p, "Cargo.toml") || is_named(p, "Cargo.lock"));
+    let commits_manifest = staged_names.iter().any(|p| is_named(p, "Cargo.toml"));
 
     // Clippy needs a build — only pay for it when the commit touches Rust.
     if commits_rust {
@@ -681,7 +691,7 @@ pub fn run() {
                 "partial commit changes Cargo.toml without Cargo.lock; lock not freshened (CI may fail)",
             );
         } else {
-            freshen_lock(&repo_root, lock_at_start);
+            freshen_lock(&repo_root, lock_at_start.as_deref());
         }
     }
 }
