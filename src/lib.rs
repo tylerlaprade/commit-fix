@@ -36,8 +36,9 @@
 //!   warning covering only the commit's staged files. Per-repo clippy.toml
 //!   and crate attributes are honored natively. If the tree doesn't
 //!   compile — someone's mid-edit code, anywhere in the dep graph — the
-//!   pass skips SILENTLY: that is the editing session's concern, not every
-//!   committer's.
+//!   pass is skipped with a warning naming the first error, since clippy
+//!   compiles the working tree rather than the commit and an unchecked
+//!   commit must never pass for a checked one.
 //! - A commit that changes Cargo.toml gets Cargo.lock freshened and
 //!   staged. Non-workspace repos are resolved in a scratch export with
 //!   `path = "../x"` dependencies as flat siblings — a repo checked out
@@ -352,6 +353,18 @@ fn lint_code(message: &serde_json::Value) -> Option<&str> {
     (!hard_error_code).then_some(code)
 }
 
+fn compile_error_in_words(message: &serde_json::Value, repo_root: &Path, ws_root: &Path) -> String {
+    let text = message["message"].as_str().unwrap_or("error");
+    let span = &message["spans"][0];
+    match span["file_name"]
+        .as_str()
+        .and_then(|file| repo_rel(file, repo_root, ws_root))
+    {
+        Some(at) => format!("{at}:{}: {text}", span["line_start"].as_u64().unwrap_or(0)),
+        None => text.to_string(),
+    }
+}
+
 fn clippy_fix(
     repo_root: &Path,
     staged_set: &HashSet<&str>,
@@ -378,7 +391,7 @@ fn clippy_fix(
         return; // no cargo — the staged fmt pass already warned
     };
     let text = String::from_utf8_lossy(&out.stdout);
-    let mut compile_error = false;
+    let mut compile_error: Option<String> = None;
     let mut lint_error = false;
     let mut by_file: HashMap<String, Vec<rustfix::Suggestion>> = HashMap::new();
     let mut unfixable: Vec<String> = Vec::new();
@@ -393,8 +406,8 @@ fn clippy_fix(
         if msg["level"] == "error" {
             if lint_code(msg).is_some() {
                 lint_error = true;
-            } else {
-                compile_error = true;
+            } else if compile_error.is_none() {
+                compile_error = Some(compile_error_in_words(msg, repo_root, &ws_root));
             }
         }
         let sugs = rustfix::get_suggestions_from_json(
@@ -439,12 +452,13 @@ fn clippy_fix(
             }
         }
     }
-    if !out.status.success() && !lint_error {
-        compile_error = true;
+    if !out.status.success() && !lint_error && compile_error.is_none() {
+        compile_error = Some(format!("cargo clippy exited with {}", out.status));
     }
-    if compile_error {
-        // Someone's mid-edit code doesn't compile. That is their session's
-        // concern, not this committer's — skip lint fixes silently.
+    if let Some(error) = compile_error {
+        warn(&format!(
+            "clippy skipped, nothing was linted or fixed: the working tree does not compile ({error})"
+        ));
         return;
     }
     if !unfixable.is_empty() {

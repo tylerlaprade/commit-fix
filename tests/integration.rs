@@ -381,7 +381,7 @@ fn unfixable_clippy_warning_is_reported() {
 }
 
 #[test]
-fn broken_tree_skips_clippy_silently() {
+fn broken_tree_skips_clippy_and_names_the_error() {
     let dir = make_repo("brokentree");
     write(&dir, "src/lib.rs", "pub mod part;\npub fn base() {}\n");
     write(&dir, "src/part.rs", "pub fn whole() {}\n");
@@ -395,8 +395,8 @@ fn broken_tree_skips_clippy_silently() {
     assert!(out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
-        !err.to_lowercase().contains("clippy"),
-        "a tree someone else broke must not produce clippy noise: {err}"
+        err.contains("clippy skipped") && err.contains("src/part.rs:1"),
+        "an unchecked commit must say so and name what broke: {err}"
     );
     // The staged fmt fix still applies.
     assert!(staged_blob(&dir, "src/lib.rs").contains("pub fn probe(x: i32) -> i32 {"));

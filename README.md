@@ -23,9 +23,9 @@ On every commit:
    commit-fix passes no lint flags of its own. Lints with no automatic fix
    in the commit's own files are summarized in one warning line. A tree
    that doesn't compile — someone's mid-edit code anywhere in the dep
-   graph — skips this pass *silently*: that is the editing session's
-   concern, not every committer's. Commits that touch no Rust never pay
-   for a build.
+   graph — skips this pass with one warning naming the first error, so a
+   commit that went unchecked always says so. Commits that touch no Rust
+   never pay for a build.
 3. If the commit changes `Cargo.toml`, freshens `Cargo.lock` and stages it —
    including the case where the repo is checked out inside an umbrella
    workspace but CI builds it standalone (resolution runs in a momentary
