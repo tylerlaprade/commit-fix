@@ -23,7 +23,8 @@
 //!   formatting ride along, gated on being byte-identical to rustfmt of
 //!   their blob.
 //! - Clippy runs whenever the commit stages Rust code or a manifest:
-//!   plain `cargo clippy --message-format=json` in the real tree, reusing
+//!   `cargo clippy --message-format=json -p <package>` for each package that
+//!   owns a staged file, in the real tree, reusing
 //!   the warm target dir (cargo may refresh a stale Cargo.lock as part of
 //!   resolution — the lock pass tolerates that). Lint policy — pedantic
 //!   level, whitelisted lints — belongs in each repo's `[lints.clippy]`
@@ -53,7 +54,7 @@
 //! left `MM` — real index holding the unfixed pre-hook bytes — which the
 //! next hook run re-fixes, collapsing the difference.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -365,6 +366,40 @@ fn compile_error_in_words(message: &serde_json::Value, repo_root: &Path, ws_root
     }
 }
 
+/// The packages that own the commit's staged files, so clippy lints the code
+/// being committed rather than a workspace's default members, which can
+/// leave a staged member out entirely. Empty when no staged file sits in a
+/// package, and then clippy runs on cargo's own default.
+fn staged_packages(repo_root: &Path, staged_set: &HashSet<&str>) -> BTreeSet<String> {
+    let Some(metadata) = output("cargo", &["metadata", "--no-deps", "--format-version", "1"])
+        .and_then(|out| serde_json::from_slice::<serde_json::Value>(&out).ok())
+    else {
+        return BTreeSet::new();
+    };
+    let packages: Vec<(PathBuf, String)> = metadata["packages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|package| {
+            let manifest = Path::new(package["manifest_path"].as_str()?);
+            let dir = std::fs::canonicalize(manifest.parent()?).ok()?;
+            Some((dir, package["name"].as_str()?.to_string()))
+        })
+        .collect();
+    let root = std::fs::canonicalize(repo_root).unwrap_or_else(|_| repo_root.to_path_buf());
+    staged_set
+        .iter()
+        .filter_map(|file| {
+            let path = root.join(file);
+            packages
+                .iter()
+                .filter(|(dir, _)| path.starts_with(dir))
+                .max_by_key(|(dir, _)| dir.components().count())
+                .map(|(_, name)| name.clone())
+        })
+        .collect()
+}
+
 fn clippy_fix(
     repo_root: &Path,
     staged_set: &HashSet<&str>,
@@ -383,8 +418,12 @@ fn clippy_fix(
     })
     .and_then(|p| std::fs::canonicalize(p).ok())
     .unwrap_or_else(|| repo_root.to_path_buf());
+    let mut args = vec!["clippy".to_string(), "--message-format=json".to_string()];
+    for package in staged_packages(repo_root, staged_set) {
+        args.extend(["-p".to_string(), package]);
+    }
     let Ok(out) = Command::new("cargo")
-        .args(["clippy", "--message-format=json"])
+        .args(&args)
         .stderr(Stdio::null())
         .output()
     else {

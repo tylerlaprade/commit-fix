@@ -15,9 +15,9 @@ On every commit:
    formatted repo-wide, one rustfmt per tracked file (so one unparseable
    mid-edit file never blocks the rest), and clean unstaged files whose only
    change is that formatting ride along into the commit.
-2. If the commit stages Rust code or a manifest, runs plain `cargo clippy`
-   in diagnostic mode (no scratch build — it reuses your warm target dir)
-   and applies machine-applicable fixes crate-wide via
+2. If the commit stages Rust code or a manifest, runs `cargo clippy` on each
+   package that owns a staged file, in diagnostic mode (no scratch build —
+   it reuses your warm target dir) and applies machine-applicable fixes crate-wide via
    [rustfix](https://crates.io/crates/rustfix). Lint policy is whatever
    your `[lints]` table, `clippy.toml`, and crate attributes say —
    commit-fix passes no lint flags of its own. Lints with no automatic fix

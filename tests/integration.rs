@@ -366,6 +366,42 @@ fn workspace_member_repo_gets_clippy_fixes() {
 }
 
 #[test]
+fn a_staged_member_outside_the_default_members_is_linted() {
+    let dir = make_repo("defaultmembers");
+    write(
+        &dir,
+        "Cargo.toml",
+        "[workspace]\nresolver = \"2\"\nmembers = [\"front\", \"back\"]\ndefault-members = [\"front\"]\n",
+    );
+    for member in ["front", "back"] {
+        write(
+            &dir,
+            &format!("{member}/Cargo.toml"),
+            &format!(
+                "[package]\nname = \"{member}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lints.clippy]\npedantic = {{ level = \"warn\", priority = -1 }}\n"
+            ),
+        );
+        write(&dir, &format!("{member}/src/lib.rs"), "pub fn base() {}\n");
+    }
+    std::fs::remove_file(dir.join("src/lib.rs")).unwrap();
+    sh(&dir, "git", &["add", "-A"]);
+    sh(&dir, "git", &["commit", "-qm", "workspace"]);
+    write(
+        &dir,
+        "back/src/lib.rs",
+        "#![warn(clippy::missing_panics_doc)]\npub fn head(v: &[i32]) -> i32 {\n    *v.first().unwrap()\n}\n",
+    );
+    sh(&dir, "git", &["add", "back/src/lib.rs"]);
+    let out = Command::new(BIN).current_dir(&dir).output().unwrap();
+    assert!(out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("missing_panics_doc at back/src/lib.rs"),
+        "a staged package must be linted even when cargo's default skips it: {err}"
+    );
+}
+
+#[test]
 fn unfixable_clippy_warning_is_reported() {
     let dir = make_repo("lintreport");
     let code = "#![warn(clippy::missing_panics_doc)]\npub fn head(v: &[i32]) -> i32 {\n    *v.first().unwrap()\n}\n";
