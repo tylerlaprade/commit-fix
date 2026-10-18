@@ -30,10 +30,12 @@
 //!   level, whitelisted lints — belongs in each repo's `[lints.clippy]`
 //!   manifest table, the one place every tool reads; this binary passes no
 //!   lint flags of its own. Machine-applicable suggestions are applied crate-wide via
-//!   rustfix to indexed blobs — auto-fixable means safe to apply
-//!   everywhere, so fixes ride along with whatever commit is in flight
-//!   (files with local edits are passed over, silently unless the file is
-//!   the commit's own). Lints with no automatic fix are summarized in one
+//!   rustfix to indexed blobs, so fixes ride along with whatever commit is
+//!   in flight (files with local edits are passed over, silently unless the
+//!   file is the commit's own). The label does not promise code that
+//!   compiles, so the same clippy run is repeated over the fixed files
+//!   before any is staged, and a file whose fix breaks the build is put back
+//!   with a warning naming the error. Lints with no automatic fix are summarized in one
 //!   warning covering only the commit's staged files. Per-repo clippy.toml
 //!   and crate attributes are honored natively. If the tree doesn't
 //!   compile — someone's mid-edit code, anywhere in the dep graph — the
@@ -512,12 +514,11 @@ fn clippy_fix(
         };
         warn(&format!("clippy: {}{suffix}", shown.join(", ")));
     }
-    let mut staged = Vec::new();
+    let mut applied = Vec::new();
     for (file, sugs) in by_file {
-        // Auto-fixable means safe to apply everywhere: fixes sweep the
-        // whole crate, riding along with whatever commit is in flight. In
-        // pathspec mode only the commit's own files (anything else would
-        // survive just as an index reversal).
+        // Fixes sweep the whole crate, riding along with whatever commit is
+        // in flight. In pathspec mode only the commit's own files (anything
+        // else would survive just as an index reversal).
         if pathspec_mode && !staged_set.contains(file.as_str()) {
             continue;
         }
@@ -556,13 +557,119 @@ fn clippy_fix(
         if fixed == code.as_bytes() {
             continue;
         }
-        if std::fs::write(&file, &fixed).is_ok() && stage_bytes(&file, &fixed) {
-            staged.push(file);
+        if std::fs::write(&file, &fixed).is_ok() {
+            applied.push(AppliedFix {
+                file,
+                original: code.into_bytes(),
+                fixed,
+            });
         }
     }
+    let staged: Vec<String> = keep_fixes_that_compile(&args, repo_root, &ws_root, applied)
+        .into_iter()
+        .filter(|fix| stage_bytes(&fix.file, &fix.fixed))
+        .map(|fix| fix.file)
+        .collect();
     if !staged.is_empty() {
         eprintln!("commit-fix: clippy fixed {}", staged.join(" "));
     }
+}
+
+struct AppliedFix {
+    file: String,
+    original: Vec<u8>,
+    fixed: Vec<u8>,
+}
+
+/// Puts a fixed file back as it was, unless someone edited it since the fix.
+fn back_out(fix: &AppliedFix) {
+    if std::fs::read(&fix.file).is_ok_and(|now| now == fix.fixed) {
+        let _ = std::fs::write(&fix.file, &fix.original);
+    }
+}
+
+/// The compile errors a rerun of the clippy pass reports, each with the
+/// repo-relative file it points at; Err when cargo failed without saying why.
+fn compile_errors(
+    args: &[String],
+    repo_root: &Path,
+    ws_root: &Path,
+) -> Result<Vec<(Option<String>, String)>, String> {
+    let out = Command::new("cargo")
+        .args(args)
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|error| error.to_string())?;
+    let mut errors = Vec::new();
+    let mut lint_error = false;
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let msg = &v["message"];
+        if v["reason"] != "compiler-message" || msg["level"] != "error" {
+            continue;
+        }
+        if lint_code(msg).is_some() {
+            lint_error = true;
+            continue;
+        }
+        let file = msg["spans"][0]["file_name"]
+            .as_str()
+            .and_then(|file| repo_rel(file, repo_root, ws_root));
+        errors.push((file, compile_error_in_words(msg, repo_root, ws_root)));
+    }
+    if !out.status.success() && !lint_error && errors.is_empty() {
+        return Err(format!("cargo clippy exited with {}", out.status));
+    }
+    Ok(errors)
+}
+
+/// rustfix's machine-applicable label does not promise code that compiles
+/// (clippy's `assert_is_empty` names a type by a path its own module cannot
+/// see), so, as `cargo fix` does, the fixes are rebuilt before any is staged:
+/// a file whose fix breaks the build goes back to its original text, and an
+/// error in a file no fix touched backs every fix out.
+fn keep_fixes_that_compile(
+    args: &[String],
+    repo_root: &Path,
+    ws_root: &Path,
+    mut fixes: Vec<AppliedFix>,
+) -> Vec<AppliedFix> {
+    while !fixes.is_empty() {
+        let errors = match compile_errors(args, repo_root, ws_root) {
+            Ok(errors) if errors.is_empty() => return fixes,
+            Ok(errors) => errors,
+            Err(error) => vec![(None, error)],
+        };
+        let (broken, intact): (Vec<AppliedFix>, Vec<AppliedFix>) =
+            fixes.into_iter().partition(|fix| {
+                errors
+                    .iter()
+                    .any(|(file, _)| file.as_deref() == Some(fix.file.as_str()))
+            });
+        if broken.is_empty() {
+            intact.iter().for_each(back_out);
+            warn(&format!(
+                "clippy fixes backed out, nothing was fixed: they break the build ({})",
+                errors[0].1
+            ));
+            return Vec::new();
+        }
+        for fix in &broken {
+            back_out(fix);
+            let error = errors
+                .iter()
+                .find(|(file, _)| file.as_deref() == Some(fix.file.as_str()))
+                .map_or("", |(_, error)| error.as_str());
+            warn(&format!(
+                "clippy fix for {} backed out: it does not compile ({error})",
+                fix.file
+            ));
+        }
+        fixes = intact;
+    }
+    fixes
 }
 
 /// Freshen Cargo.lock for the pending commit. The staged bytes are derived

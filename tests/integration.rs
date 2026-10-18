@@ -439,6 +439,40 @@ fn broken_tree_skips_clippy_and_names_the_error() {
 }
 
 #[test]
+fn a_fix_that_does_not_compile_is_backed_out() {
+    let dir = make_repo("unbuildable");
+    // clippy::assert_is_empty rewrites this assert with the type path
+    // `menus::Keybindings`, which menus.rs itself cannot resolve.
+    let menus = "#[derive(Debug, PartialEq)]\npub struct Keybindings {\n    pub up: char,\n}\n\npub struct Settings {\n    pub player_keybindings: Vec<Keybindings>,\n}\n\npub fn require_no_bindings(settings: &Settings) {\n    assert!(settings.player_keybindings.is_empty());\n}\n";
+    write(&dir, "src/lib.rs", "pub mod menus;\npub fn base() {}\n");
+    write(&dir, "src/menus.rs", menus);
+    sh(&dir, "git", &["add", "-A"]);
+    sh(&dir, "git", &["commit", "-qm", "add menus"]);
+    write(
+        &dir,
+        "src/lib.rs",
+        &format!("pub mod menus;\n{UNFORMATTED}"),
+    );
+    sh(&dir, "git", &["add", "src/lib.rs"]);
+    let out = Command::new(BIN).current_dir(&dir).output().unwrap();
+    assert!(out.status.success(), "hook must always exit 0");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("clippy fix for src/menus.rs backed out") && err.contains("src/menus.rs:"),
+        "a backed-out fix must say so and name the error: {err}"
+    );
+    assert_eq!(staged_blob(&dir, "src/menus.rs"), menus);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("src/menus.rs")).unwrap(),
+        menus
+    );
+    assert_eq!(
+        staged_blob(&dir, "src/lib.rs"),
+        format!("pub mod menus;\n{FIXED}")
+    );
+}
+
+#[test]
 fn never_blocks_when_cargo_missing() {
     let dir = make_repo("nocargo");
     write(&dir, "src/lib.rs", UNFORMATTED);

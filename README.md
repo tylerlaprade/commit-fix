@@ -18,7 +18,11 @@ On every commit:
 2. If the commit stages Rust code or a manifest, runs `cargo clippy` on each
    package that owns a staged file, in diagnostic mode (no scratch build —
    it reuses your warm target dir) and applies machine-applicable fixes crate-wide via
-   [rustfix](https://crates.io/crates/rustfix). Lint policy is whatever
+   [rustfix](https://crates.io/crates/rustfix). Clippy's machine-applicable
+   label does not promise code that compiles, so the same clippy run is
+   repeated over the fixed files before any is staged, as `cargo fix` does;
+   a file whose fix breaks the build is put back as it was, with a warning
+   naming the error. Lint policy is whatever
    your `[lints]` table, `clippy.toml`, and crate attributes say —
    commit-fix passes no lint flags of its own. Lints with no automatic fix
    in the commit's own files are summarized in one warning line. A tree
